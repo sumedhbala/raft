@@ -1,0 +1,47 @@
+{
+  "version": "2.0.0",
+  "tasks": [
+    {
+      "label": "cargo build",
+      "type": "shell",
+      "command": "cargo build",
+      "args": [],
+      "group": {
+        "kind": "build",
+        "isDefault": true
+      }
+    },
+    {
+      "label": "cargo run",
+      "type": "shell",
+      "command": "cargo",
+      "args": [
+        "run"
+        // "--release",
+        // "--",
+        // "arg1"
+      ],
+      "group": {
+        "kind": "build",
+        "isDefault": true
+      }
+    },
+    {
+      "label": "maelstrom run",
+      "type": "shell",
+      //  "linux": {
+      //     "options": {
+      //         "shell": {
+      //             "executable": "/bin/bash",
+      //         }
+      //     }
+      // },
+      "command": "cargo build && cd /Users/sbala/learn/maelstrom/maelstrom && ./maelstrom test -w echo --bin ../../rust/raft/target/debug/raft --time-limit 5 --log-stderr",
+      "args": [],
+      "group": {
+        "kind": "build",
+        "isDefault": true
+      }
+    },
+  ]
+}
