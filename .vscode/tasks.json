@@ -12,6 +12,16 @@
       }
     },
     {
+      "label": "format",
+      "type": "shell",
+      "command": "cargo fmt",
+      "args": [],
+      "group": {
+        "kind": "build",
+        "isDefault": true
+      }
+    },
+    {
       "label": "cargo run",
       "type": "shell",
       "command": "cargo",
@@ -36,8 +46,12 @@
       //         }
       //     }
       // },
-      "command": "cargo build && cd /Users/sbala/learn/maelstrom/maelstrom && ./maelstrom test -w echo --bin ../../rust/raft/target/debug/raft --time-limit 5 --log-stderr",
+      "command": "cd /Users/sbala/learn/maelstrom/maelstrom && ./maelstrom test -w broadcast --bin ../../rust/raft/target/debug/raft --time-limit 20 --rate 100 --node-count 25 --topology total --latency 100",
       "args": [],
+      "dependsOn": [
+        "format",
+        "cargo build"
+      ],
       "group": {
         "kind": "build",
         "isDefault": true
