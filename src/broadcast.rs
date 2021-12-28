@@ -9,44 +9,51 @@ struct Node {
     id: String,
     neighbours: Vec<String>,
     next_msg_id: i64,
-    messages: Arc<Mutex<HashSet<i64>>>,
+    messages: Vec<i64>,
+    seen_messages: HashSet<i64>,
+    ack_messages: Arc<Mutex<HashSet<i64>>>,
 }
 
 type ThreadSet = Arc<Mutex<HashSet<i64>>>;
 
-async fn replicate(dest: String, src: String, messges: ThreadSet) {
+async fn broadcast(dest: String, src: String, msg: i64, msg_id: i64, seen: ThreadSet) {
     loop {
         {
-            let set = messges.lock().unwrap();
+            let set = seen.lock().unwrap();
+            if !set.contains(&msg_id) {
+                break;
+            }
             let message = Reply {
                 dest: &dest,
                 src: &src,
-                body: ResponseBody::Replicate {
-                    r#type: "replicate",
-                    message: &set,
+                body: ResponseBody::Broadcast {
+                    r#type: "broadcast",
+                    message: msg,
+                    msg_id,
                 },
             };
             eprintln!("Sending {}", serde_json::to_string(&message).unwrap());
             println!("{}", serde_json::to_string(&message).unwrap());
         }
-        sleep(Duration::from_millis(5000)).await;
+        sleep(Duration::from_millis(2000)).await;
     }
 }
 
 impl Node {
-    fn new(id: String, neighbours: Vec<String>) -> Node {
-        let mut node = Node {
-            id,
-            neighbours,
-            next_msg_id: 0,
-            messages: Arc::new(Mutex::new(HashSet::new())),
-        };
-        node.replicate_neighbours();
-        node
-    }
-    fn replicate_neighbours(&mut self) {
+    fn broadcast_neighbours(&mut self, msg: i64, src: &str) {
         for n in &self.neighbours {
-            tokio::spawn(replicate(n.clone(), self.id.clone(), self.messages.clone()));
+            if n != src {
+                self.next_msg_id += 1;
+                let mut db = self.ack_messages.lock().unwrap();
+                db.insert(self.next_msg_id);
+                tokio::spawn(broadcast(
+                    n.clone(),
+                    self.id.clone(),
+                    msg,
+                    self.next_msg_id,
+                    self.ack_messages.clone(),
+                ));
+            }
         }
     }
 }
@@ -73,12 +80,13 @@ enum ResponseBody<'a> {
         in_reply_to: i64,
     },
     #[serde(rename = "body")]
-    Replicate {
+    Broadcast {
         r#type: &'a str,
-        message: &'a HashSet<i64>,
+        message: i64,
+        msg_id: i64,
     },
     #[serde(rename = "body")]
-    Add {
+    BroadcastOk {
         r#type: &'a str,
         in_reply_to: i64,
         msg_id: i64,
@@ -86,7 +94,7 @@ enum ResponseBody<'a> {
     #[serde(rename = "body")]
     Read {
         r#type: &'a str,
-        value: &'a HashSet<i64>,
+        messages: &'a [i64],
         in_reply_to: i64,
     },
 }
@@ -112,11 +120,14 @@ async fn main() {
                 let body = &parsed["body"];
                 match body["type"].as_str().unwrap() {
                     "init" => {
-                        node = Some(Node::new(
-                            body["node_id"].as_str().unwrap().to_string(),
-                            serde_json::from_value(body["node_ids"].clone()).unwrap(),
-                        ));
-
+                        node = Some(Node {
+                            id: body["node_id"].as_str().unwrap().to_string(),
+                            next_msg_id: 0,
+                            neighbours: serde_json::from_value(body["node_ids"].clone()).unwrap(),
+                            messages: Vec::new(),
+                            seen_messages: HashSet::new(),
+                            ack_messages: Arc::new(Mutex::new(HashSet::new())),
+                        });
                         eprintln!("Initialized node {:?}", node.as_ref().map(|s| &s.id));
                         if let Some(s) = node.as_mut() {
                             s.next_msg_id += 1;
@@ -173,49 +184,59 @@ async fn main() {
                         eprintln!("Sending {}", serde_json::to_string(&reply).unwrap());
                         println!("{}", serde_json::to_string(&reply).unwrap());
                     }
-                    "add" => {
+                    "broadcast" => {
                         if let Some(s) = node.as_mut() {
-                            let mut set = s.messages.lock().unwrap();
-                            set.insert(body["element"].as_i64().unwrap());
-                            s.next_msg_id += 1;
+                            if !s.seen_messages.contains(&body["message"].as_i64().unwrap()) {
+                                s.broadcast_neighbours(
+                                    body["message"].as_i64().unwrap(),
+                                    parsed["src"].as_str().unwrap(),
+                                );
+                                s.messages.push(body["message"].as_i64().unwrap());
+                                s.seen_messages.insert(body["message"].as_i64().unwrap());
+                            }
+                        }
+
+                        if let Some(msg_id) = body["msg_id"].as_i64() {
+                            if let Some(s) = node.as_mut() {
+                                s.next_msg_id += 1;
+                            }
 
                             let reply = Reply {
                                 dest: parsed["src"].as_str().unwrap(),
-                                src: &s.id,
-                                body: ResponseBody::Add {
-                                    msg_id: s.next_msg_id,
-                                    r#type: "add_ok",
-                                    in_reply_to: body["msg_id"].as_i64().unwrap(),
+                                src: node.as_ref().map(|s| &s.id).unwrap(),
+                                body: ResponseBody::BroadcastOk {
+                                    msg_id: node.as_ref().map(|s| s.next_msg_id).unwrap(),
+                                    r#type: "broadcast_ok",
+                                    in_reply_to: msg_id,
                                 },
                             };
                             eprintln!("Sending {}", serde_json::to_string(&reply).unwrap());
                             println!("{}", serde_json::to_string(&reply).unwrap());
                         }
                     }
-                    "replicate" => {
+                    "broadcast_ok" => {
                         if let Some(s) = node.as_mut() {
-                            let mut set = s.messages.lock().unwrap();
-                            let r: HashSet<i64> =
-                                serde_json::from_value(body["message"].clone()).unwrap();
-                            set.extend(&r);
+                            let mut set = s.ack_messages.lock().unwrap();
+                            if set.contains(&body["in_reply_to"].as_i64().unwrap()) {
+                                set.remove(&body["in_reply_to"].as_i64().unwrap());
+                            }
                         }
                     }
                     "read" => {
                         if let Some(s) = node.as_mut() {
                             s.next_msg_id += 1;
-                            let set = s.messages.lock().unwrap();
-                            let reply = Reply {
-                                dest: parsed["src"].as_str().unwrap(),
-                                src: &s.id,
-                                body: ResponseBody::Read {
-                                    value: &set,
-                                    r#type: "read_ok",
-                                    in_reply_to: body["msg_id"].as_i64().unwrap(),
-                                },
-                            };
-                            eprintln!("Sending {}", serde_json::to_string(&reply).unwrap());
-                            println!("{}", serde_json::to_string(&reply).unwrap());
                         }
+                        let reply = Reply {
+                            dest: parsed["src"].as_str().unwrap(),
+                            src: node.as_ref().map(|s| &s.id).unwrap(),
+                            body: ResponseBody::Read {
+                                messages: node.as_ref().map(|s| &s.messages[..]).unwrap(),
+                                r#type: "read_ok",
+                                in_reply_to: body["msg_id"].as_i64().unwrap(),
+                            },
+                        };
+                        eprintln!("Sending {}", serde_json::to_string(&reply).unwrap());
+                        println!("{}", serde_json::to_string(&reply).unwrap());
                     }
                     _ => continue,
                 }

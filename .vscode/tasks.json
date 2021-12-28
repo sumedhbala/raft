@@ -46,7 +46,7 @@
       //         }
       //     }
       // },
-      "command": "cd /Users/sbala/learn/maelstrom/maelstrom && ./maelstrom test -w broadcast --bin ../../rust/raft/target/debug/raft --time-limit 20 --rate 100 --node-count 25 --topology total --latency 100",
+      "command": "cd /Users/sbala/learn/maelstrom/maelstrom && ./maelstrom test -w g-set --bin ../../rust/raft/target/debug/raft  --time-limit 30 --rate 10 --nemesis partition",
       "args": [],
       "dependsOn": [
         "format",
