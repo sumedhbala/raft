@@ -1,6 +1,6 @@
 use serde::Serialize;
 use serde_json::Value;
-use std::cmp::{max, min};
+use std::cmp::max;
 use std::collections::HashMap;
 use std::io;
 use std::sync::{Arc, Mutex};
@@ -12,9 +12,8 @@ struct Node {
     next_msg_id: i64,
     counter: ThreadMap,
 }
-const ADD: usize = 0;
-const SUBTRACT: usize = 1;
-type ThreadMap = Arc<Mutex<[HashMap<String, i64>; 2]>>;
+
+type ThreadMap = Arc<Mutex<HashMap<String, i64>>>;
 
 async fn replicate(dest: String, src: String, messges: ThreadMap) {
     loop {
@@ -41,10 +40,7 @@ impl Node {
             id: id.clone(),
             neighbours,
             next_msg_id: 0,
-            counter: Arc::new(Mutex::new([
-                HashMap::from([(id.clone(), 0)]),
-                HashMap::from([(id, 0)]),
-            ])),
+            counter: Arc::new(Mutex::new(HashMap::from([(id, 0)]))),
         };
         node.replicate_neighbours();
         node
@@ -53,8 +49,7 @@ impl Node {
         for n in &self.neighbours {
             {
                 let mut hash = self.counter.lock().unwrap();
-                hash[ADD].insert(n.to_string(), 0);
-                hash[SUBTRACT].insert(n.to_string(), 0);
+                hash.insert(n.to_string(), 0);
             }
             tokio::spawn(replicate(n.clone(), self.id.clone(), self.counter.clone()));
         }
@@ -79,7 +74,7 @@ enum ResponseBody<'a> {
     #[serde(rename = "body")]
     Replicate {
         r#type: &'a str,
-        msg: &'a [HashMap<String, i64>; 2],
+        msg: &'a HashMap<String, i64>,
     },
     #[serde(rename = "body")]
     Add {
@@ -160,21 +155,10 @@ async fn main() {
                         if let Some(s) = node.as_mut() {
                             let current;
                             let mut hash = s.counter.lock().unwrap();
-                            let value = body["delta"].as_i64().unwrap();
-                            match value {
-                                0.. => {
-                                    {
-                                        current = *hash[ADD].get(&s.id).unwrap();
-                                    }
-                                    hash[ADD].insert(s.id.clone(), current + value);
-                                }
-                                _ => {
-                                    {
-                                        current = *hash[SUBTRACT].get(&s.id).unwrap();
-                                    }
-                                    hash[SUBTRACT].insert(s.id.clone(), current + value);
-                                }
+                            {
+                                current = *hash.get(&s.id).unwrap();
                             }
+                            hash.insert(s.id.clone(), current + body["delta"].as_i64().unwrap());
                             s.next_msg_id += 1;
 
                             let reply = Reply {
@@ -192,19 +176,16 @@ async fn main() {
                     }
                     "replicate" => {
                         if let Some(s) = node.as_mut() {
-                            let r: [HashMap<String, i64>; 2] =
+                            let r: HashMap<String, i64> =
                                 serde_json::from_value(body["msg"].clone()).unwrap();
                             let mut hash = s.counter.lock().unwrap();
-                            let funcs = [max, min];
-                            for i in [ADD, SUBTRACT] {
-                                for k in r[i].keys() {
-                                    let current: i64 = match hash[i].get(k) {
-                                        Some(val) => *val,
-                                        None => 0,
-                                    };
-                                    let value = *r[i].get(k).unwrap();
-                                    hash[i].insert(k.to_string(), funcs[i](current, value));
-                                }
+                            for k in r.keys() {
+                                let current: i64 = match hash.get(k) {
+                                    Some(val) => *val,
+                                    None => 0,
+                                };
+                                let value = *r.get(k).unwrap();
+                                hash.insert(k.to_string(), max(current, value));
                             }
                         }
                     }
@@ -216,8 +197,7 @@ async fn main() {
                                 dest: parsed["src"].as_str().unwrap(),
                                 src: &s.id,
                                 body: ResponseBody::Read {
-                                    value: hash[ADD].values().sum::<i64>()
-                                        + hash[SUBTRACT].values().sum::<i64>(),
+                                    value: hash.values().sum(),
                                     r#type: "read_ok",
                                     in_reply_to: body["msg_id"].as_i64().unwrap(),
                                 },

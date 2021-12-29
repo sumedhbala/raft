@@ -46,7 +46,7 @@
       //         }
       //     }
       // },
-      "command": "cd /Users/sbala/learn/maelstrom/maelstrom && ./maelstrom test -w g-counter --bin ../../rust/raft/target/debug/raft  --time-limit 30 --rate 10 --nemesis partition",
+      "command": "cd /Users/sbala/learn/maelstrom/maelstrom && ./maelstrom test -w pn-counter --bin ../../rust/raft/target/debug/raft  --time-limit 30 --rate 100 --nemesis partition",
       "args": [],
       "dependsOn": [
         "format",
