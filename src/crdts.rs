@@ -1,7 +1,6 @@
 use serde::Serialize;
 use serde_json::Value;
-use std::cmp::max;
-use std::collections::HashMap;
+use std::collections::HashSet;
 use std::io;
 use std::sync::{Arc, Mutex};
 use tokio::time::{sleep, Duration};
@@ -10,21 +9,21 @@ struct Node {
     id: String,
     neighbours: Vec<String>,
     next_msg_id: i64,
-    counter: ThreadMap,
+    messages: Arc<Mutex<HashSet<i64>>>,
 }
 
-type ThreadMap = Arc<Mutex<HashMap<String, i64>>>;
+type ThreadSet = Arc<Mutex<HashSet<i64>>>;
 
-async fn replicate(dest: String, src: String, messges: ThreadMap) {
+async fn replicate(dest: String, src: String, messges: ThreadSet) {
     loop {
         {
-            let hash = messges.lock().unwrap();
+            let set = messges.lock().unwrap();
             let message = Reply {
                 dest: &dest,
                 src: &src,
                 body: ResponseBody::Replicate {
                     r#type: "replicate",
-                    msg: &hash,
+                    message: &set,
                 },
             };
             eprintln!("Sending {}", serde_json::to_string(&message).unwrap());
@@ -37,21 +36,17 @@ async fn replicate(dest: String, src: String, messges: ThreadMap) {
 impl Node {
     fn new(id: String, neighbours: Vec<String>) -> Node {
         let mut node = Node {
-            id: id.clone(),
+            id,
             neighbours,
             next_msg_id: 0,
-            counter: Arc::new(Mutex::new(HashMap::from([(id, 0)]))),
+            messages: Arc::new(Mutex::new(HashSet::new())),
         };
         node.replicate_neighbours();
         node
     }
     fn replicate_neighbours(&mut self) {
         for n in &self.neighbours {
-            {
-                let mut hash = self.counter.lock().unwrap();
-                hash.insert(n.to_string(), 0);
-            }
-            tokio::spawn(replicate(n.clone(), self.id.clone(), self.counter.clone()));
+            tokio::spawn(replicate(n.clone(), self.id.clone(), self.messages.clone()));
         }
     }
 }
@@ -72,9 +67,15 @@ enum ResponseBody<'a> {
         echo: &'a str,
     },
     #[serde(rename = "body")]
+    Topology {
+        msg_id: i64,
+        r#type: &'a str,
+        in_reply_to: i64,
+    },
+    #[serde(rename = "body")]
     Replicate {
         r#type: &'a str,
-        msg: &'a HashMap<String, i64>,
+        message: &'a HashSet<i64>,
     },
     #[serde(rename = "body")]
     Add {
@@ -85,7 +86,7 @@ enum ResponseBody<'a> {
     #[serde(rename = "body")]
     Read {
         r#type: &'a str,
-        value: i64,
+        value: &'a HashSet<i64>,
         in_reply_to: i64,
     },
 }
@@ -151,14 +152,31 @@ async fn main() {
                         eprintln!("Sending {}", serde_json::to_string(&reply).unwrap());
                         println!("{}", serde_json::to_string(&reply).unwrap());
                     }
+                    "topology" => {
+                        if let Some(s) = node.as_mut() {
+                            s.neighbours =
+                                serde_json::from_value(body["topology"][&s.id].clone()).unwrap();
+                            eprintln!("My neighbours are {:?}", s.neighbours);
+                        }
+                        if let Some(s) = node.as_mut() {
+                            s.next_msg_id += 1;
+                        }
+                        let reply = Reply {
+                            dest: parsed["src"].as_str().unwrap(),
+                            src: node.as_ref().map(|s| &s.id).unwrap(),
+                            body: ResponseBody::Topology {
+                                msg_id: node.as_ref().map(|s| s.next_msg_id).unwrap(),
+                                r#type: "topology_ok",
+                                in_reply_to: body["msg_id"].as_i64().unwrap(),
+                            },
+                        };
+                        eprintln!("Sending {}", serde_json::to_string(&reply).unwrap());
+                        println!("{}", serde_json::to_string(&reply).unwrap());
+                    }
                     "add" => {
                         if let Some(s) = node.as_mut() {
-                            let current;
-                            let mut hash = s.counter.lock().unwrap();
-                            {
-                                current = *hash.get(&s.id).unwrap();
-                            }
-                            hash.insert(s.id.clone(), current + body["delta"].as_i64().unwrap());
+                            let mut set = s.messages.lock().unwrap();
+                            set.insert(body["element"].as_i64().unwrap());
                             s.next_msg_id += 1;
 
                             let reply = Reply {
@@ -176,28 +194,21 @@ async fn main() {
                     }
                     "replicate" => {
                         if let Some(s) = node.as_mut() {
-                            let r: HashMap<String, i64> =
-                                serde_json::from_value(body["msg"].clone()).unwrap();
-                            let mut hash = s.counter.lock().unwrap();
-                            for k in r.keys() {
-                                let current: i64 = match hash.get(k) {
-                                    Some(val) => *val,
-                                    None => 0,
-                                };
-                                let value = *r.get(k).unwrap();
-                                hash.insert(k.to_string(), max(current, value));
-                            }
+                            let mut set = s.messages.lock().unwrap();
+                            let r: HashSet<i64> =
+                                serde_json::from_value(body["message"].clone()).unwrap();
+                            set.extend(&r);
                         }
                     }
                     "read" => {
                         if let Some(s) = node.as_mut() {
                             s.next_msg_id += 1;
-                            let hash = s.counter.lock().unwrap();
+                            let set = s.messages.lock().unwrap();
                             let reply = Reply {
                                 dest: parsed["src"].as_str().unwrap(),
                                 src: &s.id,
                                 body: ResponseBody::Read {
-                                    value: hash.values().sum(),
+                                    value: &set,
                                     r#type: "read_ok",
                                     in_reply_to: body["msg_id"].as_i64().unwrap(),
                                 },
