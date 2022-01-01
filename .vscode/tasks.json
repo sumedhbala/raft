@@ -46,7 +46,7 @@
       //         }
       //     }
       // },
-      "command": "cd /Users/sbala/learn/maelstrom/maelstrom && ./maelstrom test -w txn-list-append --bin ../../rust/raft/target/debug/raft  --time-limit 30 --node-count 1 --concurrency 10n --rate 100",
+      "command": "cd /Users/sbala/learn/maelstrom/maelstrom && ./maelstrom test -w txn-list-append --bin ../../rust/raft/target/debug/raft  --time-limit 30 --node-count 2 --concurrency 10n --rate 100",
       "args": [],
       "dependsOn": [
         "format",
